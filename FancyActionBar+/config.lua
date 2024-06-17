@@ -1279,21 +1279,22 @@ FancyActionBar.frozen = {
 };
 FancyActionBar.iceShield = {
   -- for tracking if able to absord projectiles.
-  [86135] = true; -- crystallized shield
-  -- [86139] = true; -- crystallized slab
-  [92168] = true; -- crystallized slab
-  [86143] = true; -- shimmering shield
+  [86135] = true, -- crystallized shield
+  [86139] = true, -- crystallized slab
+  --[92168] = true; -- crystallized slab
+  [86143] = true, -- shimmering shield
 };
 FancyActionBar.reflects = {
   -- to track the reflect / absorb charges.
   -- abilities entered here will be updated with EVENT_COMBAT_EVENT 'OnReflect'.
-  [126604] = 28727; -- defensive posture
-  [126608] = 38312; -- defensive stance
-  [38324] = 38317;  -- absorb missile
-
-  [92168] = 86139;  -- crystallized Slab
+  [126604] = 28727, -- defensive posture
+  [126608] = 38312, -- defensive stance
+  [38324] = 38317,  -- absorb missile
+  [86135] = 86135,  -- crystallized shield
+  [86139] = 86139,  -- crystallized slab
+  [86143] = 86143,  -- shimmering shield
 };
-FancyActionBar.ignore = {
+FancyActionBar.dontFade = {
   -- filter for debugging.
   [63601] = true;  -- ESO Plus
   [160197] = true; -- ward master

@@ -3299,6 +3299,8 @@ function FancyActionBar.Initialize()
       Chat("===================");
     end;
 
+    if aId then return end
+
     if (FancyActionBar.reflects[aId]) then
       if (result == ACTION_RESULT_EFFECT_GAINED_DURATION) then
         if FancyActionBar.iceShield[aId] then
