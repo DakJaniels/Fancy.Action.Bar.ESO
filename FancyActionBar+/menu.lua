@@ -171,19 +171,7 @@ local saveUIPresetIncludeParentTimeBlacklist = false
 local saveUIPresetIncludeEffectWidgets = false
 local applyUIPresetIncludeAbilityData = false
 
-local builtInUIPresets =
-{
-    [1] = { "None", {} },
-    [2] = { "Default UI", FancyActionBar.defaultSettings },
-    [3] = { "Dev's Preferred UI", FancyActionBar.devConfig },
-    [4] = { "ADR-like UI", FancyActionBar.adrConfig },
-}
-
-local builtInUIPresetNames = {}
-for _, preset in ipairs(builtInUIPresets) do
-    builtInUIPresetNames[preset[1]] = true
-end
-
+local builtInUIPresets = FancyActionBar.GetBuiltInUIPresets()
 local presetIgnoreKeys =
 {
     ["configChanges"] = true,
@@ -360,6 +348,10 @@ function FancyActionBar.GetPresets()
         table.insert(presets, preset[1])
     end
 
+    for _, name in ipairs(FancyActionBar.GetExternalUIPresetNames()) do
+        table.insert(presets, name)
+    end
+
     FancyActionBar.EnsureUserUIPresets()
 
     local userPresets = {}
@@ -379,7 +371,9 @@ function FancyActionBar.GetPresets()
     end)
 
     for _, preset in ipairs(userPresets) do
-        table.insert(presets, preset.name)
+        if not FancyActionBar.IsReservedUIPresetName(preset.name) then
+            table.insert(presets, preset.name)
+        end
     end
 
     return presets
@@ -453,7 +447,7 @@ function FancyActionBar.GetUniqueUIPresetName(presetName, ignoredPresetId)
         return nil
     end
 
-    if builtInUIPresetNames[trimmedName] then
+    if FancyActionBar.IsReservedUIPresetName(trimmedName) then
         return nil, "reserved"
     end
 
@@ -541,7 +535,8 @@ function FancyActionBar.UpdateUIPresetControls()
 
     local presetDropdown = WM:GetControlByName("UI_Preset_Dropdown")
     if presetDropdown then
-        presetDropdown:UpdateChoices(FancyActionBar.GetPresets())
+        local choices = FancyActionBar.GetPresets()
+        presetDropdown:UpdateChoices(choices, nil, FancyActionBar.GetPresetTooltips(choices))
         presetDropdown.dropdown:SetSelectedItem(selectedPresetName)
     end
 
@@ -622,14 +617,6 @@ function FancyActionBar.ApplyUserUIPresetSettings(settings, includes, applyAbili
     end
 end
 
-function FancyActionBar.GetBuiltInPresetData(presetName)
-    for _, preset in ipairs(builtInUIPresets) do
-        if preset[1] == presetName then
-            return preset[2]
-        end
-    end
-end
-
 function FancyActionBar.GetUserUIPresetByName(presetName)
     FancyActionBar.EnsureUserUIPresets()
 
@@ -645,10 +632,6 @@ function FancyActionBar.GetUserUIPresetByName(presetName)
 end
 
 function FancyActionBar.SelectedPresetIncludesAbilityData()
-    if builtInUIPresetNames[selectedPresetName] then
-        return false
-    end
-
     local presetInfo = FancyActionBar.GetUserUIPresetByName(selectedPresetName)
     if presetInfo == nil then
         return false
@@ -669,8 +652,8 @@ function FancyActionBar.SaveCurrentUIPreset()
         return
     end
 
-    if builtInUIPresetNames[trimmedName] then
-        CHAT_ROUTER:AddSystemMessage("That preset name is reserved for a built-in preset.")
+    if FancyActionBar.IsReservedUIPresetName(trimmedName) then
+        CHAT_ROUTER:AddSystemMessage("That preset name is reserved for a built-in or third-party preset.")
         return
     end
 
@@ -728,7 +711,7 @@ function FancyActionBar.RenameSelectedUIPreset()
     local presetName, failureReason = FancyActionBar.GetUniqueUIPresetName(renameUIPresetName, selectedUserUIPresetId)
     if presetName == nil then
         if failureReason == "reserved" then
-            CHAT_ROUTER:AddSystemMessage("That preset name is reserved for a built-in preset.")
+            CHAT_ROUTER:AddSystemMessage("That preset name is reserved for a built-in or third-party preset.")
         end
         return
     end
@@ -926,16 +909,22 @@ local function geometrySetting(assign)
     end
 end
 
-local function OnBarScaleChanged(locked)
+local function OnBarScaleChanged()
+    local c = FancyActionBar.constants
+    if c and SV.abScaling then
+        local ab = SV.abScaling[c.mode == 2 and "gp" or "kb"]
+        if ab then
+            c.abScale.enable = ab.enable
+            c.abScale.scale = ab.scale
+        end
+    end
     FancyActionBar.SetScale()
-    FancyActionBar.ToggleMover(true)
-    FancyActionBar.ToggleMover(false)
+    local _, locked = GetActiveWeaponPairInfo()
     RefreshBarLayout(locked)
     if Azurah then UpdateAzurahDb() end
-    if not FancyActionBar.wasMoved then
-        FancyActionBar.ResetMoveActionBar()
-        FancyActionBar.RepositionElements()
-    end
+    FancyActionBar.ApplyPosition()
+    FancyActionBar.ReanchorMover()
+    FancyActionBar.RefreshMoverSize()
 end
 
 ----------------------------------------------
@@ -2669,6 +2658,30 @@ function FancyActionBar.RefreshMenuAfterUIPresetApply(abilityDataApplied)
     end
 end
 
+local function ApplyOverlayUIPresetSettings(settings)
+    for key, value in pairs(settings) do
+        if not presetIgnoreKeys[key] and not presetAlwaysIgnoreKeys[key] then
+            SV[key] = FancyActionBar.CopyPresetValue(value)
+        end
+    end
+end
+
+function FancyActionBar.OnExternalUIPresetsChanged()
+    if SV == nil then
+        return
+    end
+
+    if selectedPresetName ~= "None"
+        and not FancyActionBar.IsReservedUIPresetName(selectedPresetName)
+        and FancyActionBar.GetUserUIPresetByName(selectedPresetName) == nil
+    then
+        selectedPresetName = "None"
+        applyUIPresetIncludeAbilityData = false
+    end
+
+    FancyActionBar.UpdateUIPresetControls()
+end
+
 function FancyActionBar.SetUIPreset(presetName)
     if presetName == nil or presetName == "" or presetName == "None" then
         return
@@ -2678,20 +2691,21 @@ function FancyActionBar.SetUIPreset(presetName)
     local builtInData = FancyActionBar.GetBuiltInPresetData(presetName)
 
     if builtInData then
-        for key, value in pairs(builtInData) do
-            if not presetIgnoreKeys[key] then
-                SV[key] = FancyActionBar.CopyPresetValue(value)
-            end
-        end
+        ApplyOverlayUIPresetSettings(builtInData)
     else
-        local presetInfo = FancyActionBar.GetUserUIPresetByName(presetName)
-        if presetInfo == nil or presetInfo.settings == nil then
-            return
-        end
+        local external = FancyActionBar.GetExternalUIPresetByName(presetName)
+        if external then
+            ApplyOverlayUIPresetSettings(external.settings)
+        else
+            local presetInfo = FancyActionBar.GetUserUIPresetByName(presetName)
+            if presetInfo == nil or presetInfo.settings == nil then
+                return
+            end
 
-        FancyActionBar.ApplyUserUIPresetSettings(presetInfo.settings, presetInfo.includes or {}, applyUIPresetIncludeAbilityData)
-        abilityDataApplied = applyUIPresetIncludeAbilityData
-            and FancyActionBar.PresetHasStoredAbilityData(presetInfo.settings, presetInfo.includes)
+            FancyActionBar.ApplyUserUIPresetSettings(presetInfo.settings, presetInfo.includes or {}, applyUIPresetIncludeAbilityData)
+            abilityDataApplied = applyUIPresetIncludeAbilityData
+                and FancyActionBar.PresetHasStoredAbilityData(presetInfo.settings, presetInfo.includes)
+        end
     end
 
     FancyActionBar.RefreshAfterPresetApply(abilityDataApplied)
@@ -2829,6 +2843,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
         tableIndex = tableIndex + 1
 
         -- ===========[	UI Presets	]===================
+        local uiPresetChoices = FancyActionBar.GetPresets()
         table.insert(optionsTable,
             {
                 type = "submenu",
@@ -2838,7 +2853,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     {
                         type = "description",
                         title = "",
-                        text = "Apply a built-in or saved UI preset. Saved presets can optionally include ability configuration and blacklist data.",
+                        text = "Apply a built-in, third-party, or saved UI preset. Saved presets can optionally include ability configuration and blacklist data.",
                         width = "full",
                     },
                     {
@@ -2846,8 +2861,8 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                         name = "Select UI Preset",
                         scrollable = true,
                         tooltip = "Set a preset UI configuration.",
-                        choices = FancyActionBar.GetPresets(),
-                        sort = "name-up",
+                        choices = uiPresetChoices,
+                        choicesTooltips = FancyActionBar.GetPresetTooltips(uiPresetChoices),
                         getFunc = function ()
                             return selectedPresetName
                         end,
@@ -2997,7 +3012,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     {
                         type = "description",
                         title = "Manage Saved Presets",
-                        text = "Rename or delete presets you have saved. Built-in presets cannot be modified.",
+                        text = "Rename or delete presets you have saved. Built-in and third-party presets cannot be modified here.",
                         width = "full",
                     },
                     {
@@ -3083,6 +3098,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     end,
                     setFunc = function (value)
                         SV.forceAzurahMover = value or false
+                        OnBarScaleChanged()
                     end,
                     width = "full",
                 },
@@ -3116,9 +3132,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     setFunc = function (value)
                         SV.abScaling.kb.enable = value or false
                         if FancyActionBar.style == 1 then
-                            FancyActionBar.constants.abScale.enable = value
-                            local _, locked = GetActiveWeaponPairInfo()
-                            OnBarScaleChanged(locked)
+                            OnBarScaleChanged()
                         end
                     end,
                     width = "half",
@@ -3126,7 +3140,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                 {
                     type = "slider",
                     name = "Actionbar Size",
-                    default = defaults.abScale,
+                    default = defaults.abScaling.kb.scale,
                     min = 30,
                     max = 250,
                     step = 1,
@@ -3139,9 +3153,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     setFunc = function (value)
                         SV.abScaling.kb.scale = value
                         if FancyActionBar.style == 1 then
-                            FancyActionBar.constants.abScale.enable = value
-                            local _, locked = GetActiveWeaponPairInfo()
-                            OnBarScaleChanged(locked)
+                            OnBarScaleChanged()
                         end
                     end,
                     width = "half",
@@ -3187,9 +3199,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     setFunc = function (value)
                         SV.abScaling.gp.enable = value or false
                         if FancyActionBar.style == 2 then
-                            FancyActionBar.constants.abScale.enable = value
-                            local _, locked = GetActiveWeaponPairInfo()
-                            OnBarScaleChanged(locked)
+                            OnBarScaleChanged()
                         end
                     end,
                     width = "half",
@@ -3210,9 +3220,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     setFunc = function (value)
                         SV.abScaling.gp.scale = value
                         if FancyActionBar.style == 2 then
-                            FancyActionBar.constants.abScale.scale = value
-                            local _, locked = GetActiveWeaponPairInfo()
-                            OnBarScaleChanged(locked)
+                            OnBarScaleChanged()
                         end
                     end,
                     width = "half",
@@ -3255,9 +3263,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     setFunc = function (value)
                         SV.abScaling.gp.enable = value or false
                         if FancyActionBar.style == 2 then
-                            FancyActionBar.constants.abScale.enable = value
-                            local _, locked = GetActiveWeaponPairInfo()
-                            OnBarScaleChanged(locked)
+                            OnBarScaleChanged()
                         end
                     end,
                     width = "half",
@@ -3278,9 +3284,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     setFunc = function (value)
                         SV.abScaling.gp.scale = value
                         if FancyActionBar.style == 2 then
-                            FancyActionBar.constants.abScale.scale = value
-                            local _, locked = GetActiveWeaponPairInfo()
-                            OnBarScaleChanged(locked)
+                            OnBarScaleChanged()
                         end
                     end,
                     width = "half",
@@ -3723,10 +3727,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
                     FancyActionBar.RefreshLayoutConstants()
                     local _, locked = GetActiveWeaponPairInfo()
                     RefreshBarLayout(locked)
-                    if not FancyActionBar.wasMoved then
-                        FancyActionBar.ResetMoveActionBar()
-                        FancyActionBar.RepositionElements()
-                    end
+                    FancyActionBar.ApplyPosition()
                 end,
                 width = "half",
             },
@@ -8448,6 +8449,7 @@ function FancyActionBar.BuildMenu(sv, cv, defaults)
             inMenu = true
             FancyActionBar.UpdateSlottedSkillsDecriptions()
             FancyActionBar.RefreshEffectWidgetChoices()
+            FancyActionBar.UpdateUIPresetControls()
             if not IsConsoleUI() then
                 local widgetDropdown = WM:GetControlByName("Configured_Widgets_Dropdown")
                 if widgetDropdown then
@@ -9023,57 +9025,62 @@ function FancyActionBar.UndoMove()
     FAB_Mover:SetHidden(not FancyActionBar.IsUnlocked())
 end
 
-function FancyActionBar.ResetMoveActionBar()
-    local v, d = FancyActionBar:GetMovableVarsForUI()
-    FancyActionBar.SaveCurrentLocation()
-    ACTION_BAR:ClearAnchors()
+local function SyncMoveConstants(x, y, enable)
+    local move = FancyActionBar.constants and FancyActionBar.constants.move
+    if not move then
+        return
+    end
 
-    local screenWidth = GuiRoot:GetWidth()
-    local screenHeight = GuiRoot:GetHeight()
-    local barWidth = ACTION_BAR:GetWidth()
-    local barHeight = ACTION_BAR:GetHeight()
+    if x ~= nil then
+        move.x = x
+    end
+    if y ~= nil then
+        move.y = y
+    end
+    if enable ~= nil then
+        move.enable = enable
+    end
+end
 
-    local posX, posY
+local function PersistMoveSettings(x, y, enable)
+    local moveSV = FancyActionBar.style == 2 and SV.abMove.gp or SV.abMove.kb
+    if not moveSV then
+        return
+    end
 
+    if x ~= nil then
+        moveSV.x = x
+    end
+    if y ~= nil then
+        moveSV.y = y
+    end
+    if enable ~= nil then
+        moveSV.enable = enable
+    end
+
+    SyncMoveConstants(x, y, enable)
+end
+
+local function ApplyDefaultActionBarAnchor(d)
     if IsConsoleUI() then
-        -- Translate BOTTOM anchoring to TOPLEFT anchoring for console
-        posX = (screenWidth - barWidth) / 2 + (d.x or 0)
-        posY = screenHeight - barHeight + (d.y or -75)
+        local posX = (GuiRoot:GetWidth() - ACTION_BAR:GetWidth()) / 2 + (d.x or 0)
+        local posY = GuiRoot:GetHeight() - ACTION_BAR:GetHeight() + (d.y or -75)
         ACTION_BAR:SetAnchor(TOPLEFT, GuiRoot, TOPLEFT, posX, posY)
     else
         ACTION_BAR:SetAnchor(BOTTOM, GuiRoot, BOTTOM, d.x or 0, d.y or 0)
     end
+end
 
-    ACTION_BAR:RegisterForEvent(EVENT_SCREEN_RESIZED, function ()
-        if not v.enable then
-            ACTION_BAR:ClearAnchors()
-            if IsConsoleUI() then
-                local newX = (GuiRoot:GetWidth() - ACTION_BAR:GetWidth()) / 2 + (d.x or 0)
-                local newY = GuiRoot:GetHeight() - ACTION_BAR:GetHeight() + (d.y or -75)
-                ACTION_BAR:SetAnchor(TOPLEFT, GuiRoot, TOPLEFT, newX, newY)
-            else
-                ACTION_BAR:SetAnchor(BOTTOM, GuiRoot, BOTTOM, d.x or 0, d.y or 0)
-            end
-        end
-    end)
+function FancyActionBar.ResetMoveActionBar()
+    local _, d = FancyActionBar:GetMovableVarsForUI()
+    FancyActionBar.SaveCurrentLocation()
+    ACTION_BAR:ClearAnchors()
+    ApplyDefaultActionBarAnchor(d)
 
-    FancyActionBar.ReanchorMover()
-    FancyActionBar.SaveMoverPosition()
-
-    if FancyActionBar.style == 2 then
-        SV.abMove.gp.x = d.x
-        SV.abMove.gp.y = d.y
-        SV.abMove.gp.enable = false
-    else
-        SV.abMove.kb.x = d.x
-        SV.abMove.kb.y = d.y
-        SV.abMove.kb.enable = false
-    end
-
-    FancyActionBar.constants.move.x = d.x
-    FancyActionBar.constants.move.y = d.y
-    FancyActionBar.constants.move.enable = false
+    PersistMoveSettings(d.x, d.y, false)
     FancyActionBar.SetMoved(false)
+    FancyActionBar.ReanchorMover()
+    FancyActionBar.RefreshMoverSize()
     FAB_Mover:SetHidden(not FancyActionBar.IsUnlocked())
 end
 
@@ -9124,31 +9131,18 @@ function FancyActionBar.MoveActionBar()
     ACTION_BAR:ClearAnchors()
 
     if v.enable then
-        -- Ensure the action bar stays within screen bounds
         local screenWidth = GuiRoot:GetWidth()
         local screenHeight = GuiRoot:GetHeight()
         local barWidth = ACTION_BAR:GetWidth()
         local barHeight = ACTION_BAR:GetHeight()
 
-        -- Clamp position to screen bounds with padding
         local padding = 20
         local x = zo_clamp(v.x, -barWidth + padding, screenWidth - padding)
         local y = zo_clamp(v.y, -barHeight + padding, screenHeight - padding)
 
         ACTION_BAR:SetAnchor(TOPLEFT, GuiRoot, TOPLEFT, x, y)
-
-        -- Update stored position if it was clamped
-        if x ~= v.x or y ~= v.y then
-            if FancyActionBar.style == 2 then
-                SV.abMove.gp.x = x
-                SV.abMove.gp.y = y
-            else
-                SV.abMove.kb.x = x
-                SV.abMove.kb.y = y
-            end
-        end
     else
-        ACTION_BAR:SetAnchor(BOTTOM, GuiRoot, BOTTOM, d.x, d.y)
+        ApplyDefaultActionBarAnchor(d)
     end
 end
 
@@ -9164,19 +9158,7 @@ function FancyActionBar.SaveMoverPosition()
     local x = FAB_Mover:GetLeft()
     local y = FAB_Mover:GetTop()
 
-    if FancyActionBar.style == 2 then
-        SV.abMove.gp.x = x
-        SV.abMove.gp.y = y
-        SV.abMove.gp.enable = true
-    else
-        SV.abMove.kb.x = x
-        SV.abMove.kb.y = y
-        SV.abMove.kb.enable = true
-    end
-
-    FancyActionBar.constants.move.x = x
-    FancyActionBar.constants.move.y = y
-    FancyActionBar.constants.move.enable = true
+    PersistMoveSettings(x, y, true)
 
     if Azurah then UpdateAzurahDb() end
 
@@ -9347,38 +9329,30 @@ end
 
 function FancyActionBar.InitializeScreenResizeHandler()
     local function OnScreenResize()
-        local v = FancyActionBar:GetMovableVarsForUI()
+        local v, d = FancyActionBar:GetMovableVarsForUI()
         if v.enable then
-            -- Recalculate position when screen is resized
             local screenWidth = GuiRoot:GetWidth()
             local screenHeight = GuiRoot:GetHeight()
             local barWidth = ACTION_BAR:GetWidth()
             local barHeight = ACTION_BAR:GetHeight()
 
-            -- Maintain relative position on screen
             local relativeX = v.x / screenWidth
             local relativeY = v.y / screenHeight
 
-            -- Apply new position with bounds checking
             local padding = 20
             local newX = zo_clamp(relativeX * screenWidth, -barWidth + padding, screenWidth - padding)
             local newY = zo_clamp(relativeY * screenHeight, -barHeight + padding, screenHeight - padding)
 
             ACTION_BAR:ClearAnchors()
             ACTION_BAR:SetAnchor(TOPLEFT, GuiRoot, TOPLEFT, newX, newY)
-
-            -- Update stored position
-            if FancyActionBar.style == 2 then
-                SV.abMove.gp.x = newX
-                SV.abMove.gp.y = newY
-            else
-                SV.abMove.kb.x = newX
-                SV.abMove.kb.y = newY
+            if newX ~= v.x or newY ~= v.y then
+                PersistMoveSettings(newX, newY)
             end
-
-            -- Update mover position
-            FancyActionBar.ReanchorMover()
+        else
+            ACTION_BAR:ClearAnchors()
+            ApplyDefaultActionBarAnchor(d)
         end
+        FancyActionBar.ReanchorMover()
     end
 
     EVENT_MANAGER:RegisterForEvent("FancyActionBar_ScreenResize", EVENT_SCREEN_RESIZED, OnScreenResize)

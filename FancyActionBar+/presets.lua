@@ -339,3 +339,182 @@ FancyActionBar.adrConfig =
     ["ultimateSlotCustomYOffsetGP"] = 34,
     ["quickSlotCustomYOffsetGP"] = 34,
 }
+
+-------------------------------------------------------------------------------
+-----------------------------[   UI Preset API   ]----------------------------
+-------------------------------------------------------------------------------
+-- Third-party addons can add entries to the UI Presets dropdown:
+--
+--   FancyActionBar.RegisterUIPreset("MyAddon_Compact", {
+--       name = "Compact Healer",
+--       tooltip = "MyAddon: smaller bar with hidden inactive slots.",
+--       settings = {
+--           hideInactiveSlots = true,
+--           staticBars = false,
+--           frontBarTop = true,
+--       },
+--   })
+--
+-- Requires ## DependsOn: FancyActionBar+. Call from EVENT_ADD_ON_LOADED.
+-- `settings` uses the same saved-variable keys as built-in presets
+-- (FancyActionBar.defaultSettings / FancyActionBar.adrConfig). Only the
+-- listed keys are changed; ability configuration is not applied.
+
+local builtInUIPresets =
+{
+    { "None", {} },
+    { "Default UI", FancyActionBar.defaultSettings },
+    { "Dev's Preferred UI", FancyActionBar.devConfig },
+    { "ADR-like UI", FancyActionBar.adrConfig },
+}
+
+local builtInUIPresetNames = {}
+for _, preset in ipairs(builtInUIPresets) do
+    builtInUIPresetNames[preset[1]] = true
+end
+
+local externalUIPresets = {}
+local externalUIPresetNameIndex = {}
+
+local function TrimPresetString(value)
+    if type(value) ~= "string" then
+        return ""
+    end
+    return value:match("^%s*(.-)%s*$") or ""
+end
+
+function FancyActionBar.GetBuiltInUIPresets()
+    return builtInUIPresets
+end
+
+function FancyActionBar.GetBuiltInPresetData(presetName)
+    for _, preset in ipairs(builtInUIPresets) do
+        if preset[1] == presetName then
+            return preset[2]
+        end
+    end
+end
+
+function FancyActionBar.IsReservedUIPresetName(presetName)
+    if type(presetName) ~= "string" or presetName == "" then
+        return false
+    end
+
+    if builtInUIPresetNames[presetName] then
+        return true
+    end
+
+    return externalUIPresetNameIndex[string.lower(presetName)] ~= nil
+end
+
+function FancyActionBar.GetExternalUIPresetByName(presetName)
+    if type(presetName) ~= "string" then
+        return nil
+    end
+
+    local id = externalUIPresetNameIndex[string.lower(presetName)]
+    return id and externalUIPresets[id] or nil
+end
+
+function FancyActionBar.GetExternalUIPresetNames()
+    local sorted = {}
+
+    for id, preset in pairs(externalUIPresets) do
+        table.insert(sorted, { id = id, name = preset.name })
+    end
+
+    table.sort(sorted, function (left, right)
+        local leftName = string.lower(left.name)
+        local rightName = string.lower(right.name)
+        if leftName == rightName then
+            return left.id < right.id
+        end
+        return leftName < rightName
+    end)
+
+    local names = {}
+    for _, preset in ipairs(sorted) do
+        table.insert(names, preset.name)
+    end
+    return names
+end
+
+function FancyActionBar.GetPresetTooltips(presetNames)
+    local tooltips = {}
+    for i, name in ipairs(presetNames) do
+        local preset = FancyActionBar.GetExternalUIPresetByName(name)
+        -- LAM requires choicesTooltips to have the same length as choices.
+        -- nil would punch a hole in the array and make #tooltips 0 for built-in presets.
+        tooltips[i] = (preset and preset.tooltip) or ""
+    end
+    return tooltips
+end
+
+--- Register a third-party UI preset for the settings dropdown.
+--- Re-registering the same id updates the existing preset.
+--- @param id string Stable unique id, e.g. "MyAddon_Compact"
+--- @param data table `{ name, settings, tooltip? }`
+--- @return boolean success
+--- @return string|nil errorMessage
+function FancyActionBar.RegisterUIPreset(id, data)
+    id = TrimPresetString(id)
+    if id == "" then
+        return false, "id must be a non-empty string"
+    end
+
+    if type(data) ~= "table" then
+        return false, "preset data must be a table"
+    end
+
+    local name = TrimPresetString(data.name)
+    if name == "" then
+        return false, "name must be a non-empty string"
+    end
+
+    if builtInUIPresetNames[name] then
+        return false, "name is reserved for a built-in preset"
+    end
+
+    local existingNameId = externalUIPresetNameIndex[string.lower(name)]
+    if existingNameId and existingNameId ~= id then
+        return false, "name is already used by another registered preset"
+    end
+
+    if type(data.settings) ~= "table" or next(data.settings) == nil then
+        return false, "settings must be a non-empty table"
+    end
+
+    local previous = externalUIPresets[id]
+    if previous then
+        externalUIPresetNameIndex[string.lower(previous.name)] = nil
+    end
+
+    local tooltip = TrimPresetString(data.tooltip)
+
+    externalUIPresets[id] =
+    {
+        name = name,
+        tooltip = tooltip ~= "" and tooltip or nil,
+        settings = ZO_DeepTableCopy(data.settings),
+    }
+    externalUIPresetNameIndex[string.lower(name)] = id
+
+    FancyActionBar.OnExternalUIPresetsChanged()
+    return true
+end
+
+--- Remove a previously registered third-party UI preset.
+--- @param id string
+--- @return boolean success
+function FancyActionBar.UnregisterUIPreset(id)
+    id = TrimPresetString(id)
+    local preset = externalUIPresets[id]
+    if not preset then
+        return false
+    end
+
+    externalUIPresetNameIndex[string.lower(preset.name)] = nil
+    externalUIPresets[id] = nil
+    FancyActionBar.OnExternalUIPresetsChanged()
+    return true
+end

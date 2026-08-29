@@ -4,7 +4,7 @@ local FancyActionBar = FancyActionBar
 -----------------------------[    Constants   ]--------------------------------
 -------------------------------------------------------------------------------
 local NAME = "FancyActionBar+"
-local VERSION = "2.19.6"
+local VERSION = "2.19.7"
 local slashCommand = "/fab" or "/FAB"
 local EM = GetEventManager()
 local WM = GetWindowManager()
@@ -1043,23 +1043,6 @@ function FancyActionBar.SetScale()
     FancyActionBar.ApplyScaleToLayout(scale)
     FancyActionBar.SetUltScale()
     FancyActionBar.SetQsScale()
-end
-
-function FancyActionBar.SyncMoveConstants(x, y, enable)
-    local c = FancyActionBar.constants
-    if not c or not c.move then
-        return
-    end
-
-    if x ~= nil then
-        c.move.x = x
-    end
-    if y ~= nil then
-        c.move.y = y
-    end
-    if enable ~= nil then
-        c.move.enable = enable
-    end
 end
 
 ---
@@ -4889,7 +4872,7 @@ end
 --- Resolve UI mode constants and scale once before structure/layout/appearance.
 function FancyActionBar.ApplyBarFoundation()
     FancyActionBar.UpdateStyle()
-    FancyActionBar.UpdateScale(scale)
+    FancyActionBar.SetScale()
 end
 
 function FancyActionBar.RefreshSlottedAbilityConfigurations()
@@ -7607,3 +7590,4 @@ function FancyActionBar.ValidateVariables() -- all about safety checks these day
 end
 
 EM:RegisterForEvent(NAME, EVENT_ADD_ON_LOADED, FancyActionBar.OnAddOnLoaded)
+
